@@ -12,6 +12,9 @@ mod imp {
     use std::borrow::Cow;
     use std::convert::Infallible;
 
+    #[cfg(feature = "decode")]
+    use crate::decode::{Charset, UnknownEncoding, decode};
+
     pub(super) struct Txt<S> {
         pub(super) bytes: S,
         pub(super) title: Title,
@@ -52,6 +55,39 @@ mod imp {
             body: Body(txt.bytes.into_string()),
             metadata: txt.metadata,
         }))
+    }
+
+    #[cfg(feature = "decode")]
+    impl Txt<Vec<u8>> {
+        pub(super) fn decode(self, charset: Charset) -> Result<Txt<String>, UnknownEncoding> {
+            decode(&self.bytes, charset).map(|decoded| Txt {
+                bytes: decoded.into_owned(),
+                title: self.title,
+                metadata: self.metadata,
+            })
+        }
+    }
+
+    #[cfg(feature = "decode")]
+    impl<'a> Txt<&'a [u8]> {
+        pub(super) fn decode(self, charset: Charset) -> Result<Txt<Cow<'a, str>>, UnknownEncoding> {
+            decode(self.bytes, charset).map(|decoded| Txt {
+                bytes: decoded,
+                title: self.title,
+                metadata: self.metadata,
+            })
+        }
+    }
+
+    #[cfg(feature = "decode")]
+    impl Txt<Cow<'_, [u8]>> {
+        pub(super) fn decode(self, charset: Charset) -> Result<Txt<String>, UnknownEncoding> {
+            decode(&self.bytes, charset).map(|decoded| Txt {
+                bytes: decoded.into_owned(),
+                title: self.title,
+                metadata: self.metadata,
+            })
+        }
     }
 }
 

@@ -1,5 +1,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[cfg(feature = "decode")]
+mod decode;
+pub use decode::{Charset, UnknownEncoding};
+
 #[cfg(any(feature = "txt-bytes", feature = "txt-io"))]
 pub mod txt;
 
