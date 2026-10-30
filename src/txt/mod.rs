@@ -114,3 +114,24 @@ impl TxtParser {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{IntoParser, ParsedDoc, Parser};
+    use std::fmt::Debug;
+
+    pub(super) async fn collect<S>(source: S) -> Vec<ParsedDoc>
+    where
+        S: IntoParser,
+        S::Error: Debug,
+        <S::Parser as Parser>::Error: Debug,
+    {
+        let mut parser = source.parser().await.unwrap();
+        let mut docs = Vec::new();
+        while let Some(doc) = parser.next().await {
+            docs.push(doc.unwrap());
+        }
+        assert!(parser.next().await.is_none());
+        docs
+    }
+}

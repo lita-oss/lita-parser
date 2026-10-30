@@ -163,3 +163,54 @@ mod de {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{Body, IntoParser, Metadata, ParsedDoc, Parser, Title};
+
+    pub(super) const VALID: &str =
+        "id,title,body,author\n1,春,\"あけぼの。\n山ぎは\",清少納言\n2,夏,\"夜,月\",作者\n";
+    pub(super) const INVALID: &str = "title,body\n春,あけぼの。\n夏\n秋,夕暮れ。\n";
+
+    pub(super) fn doc(title: &str, body: &str, metadata: &[(&str, &str)]) -> ParsedDoc {
+        ParsedDoc {
+            title: Title(title.to_owned()),
+            body: Body(body.to_owned()),
+            metadata: (!metadata.is_empty()).then(|| {
+                Metadata(
+                    metadata
+                        .iter()
+                        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                        .collect(),
+                )
+            }),
+        }
+    }
+
+    pub(super) fn expected() -> Vec<ParsedDoc> {
+        vec![
+            doc(
+                "1",
+                "あけぼの。\n山ぎは",
+                &[("title", "春"), ("author", "清少納言")],
+            ),
+            doc("2", "夜,月", &[("title", "夏"), ("author", "作者")]),
+        ]
+    }
+
+    pub(super) async fn collect<S: IntoParser>(source: S) -> (Vec<ParsedDoc>, bool)
+    where
+        S::Error: std::fmt::Debug,
+    {
+        let mut parser = source.parser().await.unwrap();
+        let mut docs = Vec::new();
+        while let Some(result) = parser.next().await {
+            match result {
+                Ok(doc) => docs.push(doc),
+                Err(_) => return (docs, true),
+            }
+        }
+        assert!(parser.next().await.is_none());
+        (docs, false)
+    }
+}

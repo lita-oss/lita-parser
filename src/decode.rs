@@ -91,46 +91,7 @@ fn decode_as(bytes: &[u8], charset: Charset, has_bom: bool) -> Cow<'_, str> {
     }
 }
 
-/// Decodes the input bytes as the character encoding `charset`.
-///
-/// When the feature flag `decode` is disabled, it is identical to [`String::from_utf8_lossy()`].
-///
-/// ```
-/// use lita_tokenizers_utils::decode::{Charset, decode};
-///
-/// let utf8_bytes = "春はあけぼの。";
-/// assert!(decode(utf8_bytes.as_bytes(), Charset::Utf8).is_ok_and(|s| s == utf8_bytes));
-///
-/// let shift_jis_bytes =
-///     &[0x8F, 0x74, 0x82, 0xCD, 0x82, 0xA0, 0x82, 0xAF, 0x82, 0xDA, 0x82, 0xCC, 0x81, 0x42];
-/// assert!(decode(shift_jis_bytes, Charset::ShiftJis).is_ok_and(|s| s == utf8_bytes));
-///
-/// let euc_jp_bytes =
-///     &[0xBD, 0xD5, 0xA4, 0xCF, 0xA4, 0xA2, 0xA4, 0xB1, 0xA4, 0xDC, 0xA4, 0xCE, 0xA1, 0xA3];
-/// assert!(decode(euc_jp_bytes, Charset::EucJp).is_ok_and(|s| s == utf8_bytes));
-///
-/// let utf16_be_bytes =
-///     &[0x66, 0x25, 0x30, 0x6F, 0x30, 0x42, 0x30, 0x51, 0x30, 0x7C, 0x30, 0x6E, 0x30, 0x02];
-/// assert!(decode(utf16_be_bytes, Charset::Utf16Be).is_ok_and(|s| s == utf8_bytes));
-///
-/// let utf16_be_bytes_bom =
-///     &[0xfe, 0xff, 0x66, 0x25, 0x30, 0x6F, 0x30, 0x42, 0x30, 0x51, 0x30, 0x7C, 0x30, 0x6E, 0x30, 0x02];
-/// assert!(decode(utf16_be_bytes_bom, Charset::Utf16Be).is_ok_and(|s| s == utf8_bytes));
-///
-/// let utf16_le_bytes =
-///     &[0x25, 0x66, 0x6F, 0x30, 0x42, 0x30, 0x51, 0x30, 0x7C, 0x30, 0x6E, 0x30, 0x02, 0x30];
-/// assert!(decode(utf16_le_bytes, Charset::Utf16Le).is_ok_and(|s| s == utf8_bytes));
-///
-/// let utf16_le_bytes_bom =
-///     &[0xff, 0xfe, 0x25, 0x66, 0x6F, 0x30, 0x42, 0x30, 0x51, 0x30, 0x7C, 0x30, 0x6E, 0x30, 0x02, 0x30];
-/// assert!(decode(utf16_le_bytes_bom, Charset::Utf16Le).is_ok_and(|s| s == utf8_bytes));
-///
-/// assert!(decode(utf8_bytes.as_bytes(), Charset::Dynamic).is_ok_and(|s| s == utf8_bytes));
-/// assert!(decode(shift_jis_bytes, Charset::Dynamic).is_ok_and(|s| s == "春はあけぼの。"));
-/// assert!(decode(euc_jp_bytes, Charset::ShiftJis).is_ok_and(|s| s == "ｽﾕ､ﾏ､｢､ｱ､ﾜ､ﾎ｡｣"));
-/// assert!(decode(euc_jp_bytes, Charset::Dynamic).is_ok_and(|s| s == "ｽﾕ､ﾏ､｢､ｱ､ﾜ､ﾎ｡｣"));
-/// ```
-pub fn decode(bytes: &[u8], charset: Charset) -> Result<Cow<'_, str>, UnknownEncoding> {
+pub(crate) fn decode(bytes: &[u8], charset: Charset) -> Result<Cow<'_, str>, UnknownEncoding> {
     use unicode_bom::Bom;
     let bom = Bom::from(bytes);
 
@@ -197,5 +158,64 @@ pub fn decode(bytes: &[u8], charset: Charset) -> Result<Cow<'_, str>, UnknownEnc
         let has_bom = (detected == Charset::Utf16Be && bom == Bom::Utf16Be)
             || (detected == Charset::Utf16Le && bom == Bom::Utf16Le);
         Ok(decode_as(bytes, detected, has_bom))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Charset, decode};
+
+    #[test]
+    fn decodes_supported_charsets() {
+        let utf8_bytes = "春はあけぼの。";
+        assert!(decode(utf8_bytes.as_bytes(), Charset::Utf8).is_ok_and(|s| s == utf8_bytes));
+
+        let shift_jis_bytes = &[
+            0x8F, 0x74, 0x82, 0xCD, 0x82, 0xA0, 0x82, 0xAF, 0x82, 0xDA, 0x82, 0xCC, 0x81, 0x42,
+        ];
+        assert!(decode(shift_jis_bytes, Charset::ShiftJis).is_ok_and(|s| s == utf8_bytes));
+
+        let euc_jp_bytes = &[
+            0xBD, 0xD5, 0xA4, 0xCF, 0xA4, 0xA2, 0xA4, 0xB1, 0xA4, 0xDC, 0xA4, 0xCE, 0xA1, 0xA3,
+        ];
+        assert!(decode(euc_jp_bytes, Charset::EucJp).is_ok_and(|s| s == utf8_bytes));
+
+        let utf16_be_bytes = &[
+            0x66, 0x25, 0x30, 0x6F, 0x30, 0x42, 0x30, 0x51, 0x30, 0x7C, 0x30, 0x6E, 0x30, 0x02,
+        ];
+        assert!(decode(utf16_be_bytes, Charset::Utf16Be).is_ok_and(|s| s == utf8_bytes));
+
+        let utf16_be_bytes_bom = &[
+            0xFE, 0xFF, 0x66, 0x25, 0x30, 0x6F, 0x30, 0x42, 0x30, 0x51, 0x30, 0x7C, 0x30, 0x6E,
+            0x30, 0x02,
+        ];
+        assert!(decode(utf16_be_bytes_bom, Charset::Utf16Be).is_ok_and(|s| s == utf8_bytes));
+
+        let utf16_le_bytes = &[
+            0x25, 0x66, 0x6F, 0x30, 0x42, 0x30, 0x51, 0x30, 0x7C, 0x30, 0x6E, 0x30, 0x02, 0x30,
+        ];
+        assert!(decode(utf16_le_bytes, Charset::Utf16Le).is_ok_and(|s| s == utf8_bytes));
+
+        let utf16_le_bytes_bom = &[
+            0xFF, 0xFE, 0x25, 0x66, 0x6F, 0x30, 0x42, 0x30, 0x51, 0x30, 0x7C, 0x30, 0x6E, 0x30,
+            0x02, 0x30,
+        ];
+        assert!(decode(utf16_le_bytes_bom, Charset::Utf16Le).is_ok_and(|s| s == utf8_bytes));
+
+        assert!(decode(utf8_bytes.as_bytes(), Charset::Dynamic).is_ok_and(|s| s == utf8_bytes));
+        assert!(decode(shift_jis_bytes, Charset::Dynamic).is_ok_and(|s| s == "春はあけぼの。"));
+        assert!(decode(euc_jp_bytes, Charset::ShiftJis).is_ok_and(|s| s == "ｽﾕ､ﾏ､｢､ｱ､ﾜ､ﾎ｡｣"));
+        assert!(decode(euc_jp_bytes, Charset::Dynamic).is_ok_and(|s| s == "ｽﾕ､ﾏ､｢､ｱ､ﾜ､ﾎ｡｣"));
+    }
+
+    #[test]
+    fn removes_matching_boms() {
+        for (bytes, charset) in [
+            (&[0xEF, 0xBB, 0xBF, 0x61][..], Charset::Utf8),
+            (&[0xFE, 0xFF, 0x00, 0x61][..], Charset::Utf16Be),
+            (&[0xFF, 0xFE, 0x61, 0x00][..], Charset::Utf16Le),
+        ] {
+            assert!(decode(bytes, charset).is_ok_and(|s| s == "a"));
+        }
     }
 }

@@ -151,3 +151,161 @@ impl StdError for ErrorWithCharset {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::txt::tests::collect;
+    use crate::{Body, ParsedDoc};
+
+    fn expected(text: &str) -> Vec<ParsedDoc> {
+        vec![ParsedDoc {
+            title: Title("title".to_owned()),
+            body: Body(text.to_owned()),
+            metadata: Some(Metadata([("key".to_owned(), "value".to_owned())].into())),
+        }]
+    }
+
+    fn metadata() -> Option<Metadata> {
+        Some(Metadata([("key".to_owned(), "value".to_owned())].into()))
+    }
+
+    #[tokio::test]
+    async fn parses_async_read() {
+        for text in ["春はあけぼの。\nSecond line", ""] {
+            let source = Txt::from(text.as_bytes(), Title("title".to_owned()), metadata());
+            assert_eq!(collect(source).await, expected(text));
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_utf8() {
+        let source = Txt::from(&b"valid\xff"[..], Title("title".to_owned()), metadata());
+        assert!(matches!(
+            source.parser().await,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData
+        ));
+    }
+
+    #[cfg(feature = "decode")]
+    #[tokio::test]
+    async fn decodes_async_read() {
+        for text in ["春はあけぼの。", ""] {
+            let (bytes, _, had_errors) = encoding_rs::SHIFT_JIS.encode(text);
+            assert!(!had_errors);
+            let source = TxtWithCharset::from(
+                bytes.as_ref(),
+                Title("title".to_owned()),
+                metadata(),
+                Charset::ShiftJis,
+            );
+            assert_eq!(collect(source).await, expected(text));
+        }
+    }
+
+    #[cfg(feature = "decode")]
+    #[tokio::test]
+    async fn rejects_unknown_async_read_encoding() {
+        let source = TxtWithCharset::from(
+            &b"\xff"[..],
+            Title("title".to_owned()),
+            metadata(),
+            Charset::Dynamic,
+        );
+        assert!(matches!(
+            source.parser().await,
+            Err(ErrorWithCharset::UnknownEncoding(_))
+        ));
+    }
+
+    #[cfg(feature = "txt-fs")]
+    #[tokio::test]
+    async fn parses_files() {
+        use std::io::Write;
+
+        for text in ["春はあけぼの。\nSecond line", ""] {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            file.write_all(text.as_bytes()).unwrap();
+            let source = Txt::from_path(file.path(), Title("title".to_owned()), metadata())
+                .await
+                .unwrap();
+            assert_eq!(collect(source).await, expected(text));
+        }
+    }
+
+    #[cfg(feature = "txt-fs")]
+    #[tokio::test]
+    async fn rejects_invalid_utf8_files() {
+        use std::io::Write;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"valid\xff").unwrap();
+        let source = Txt::from_path(file.path(), Title("title".to_owned()), metadata())
+            .await
+            .unwrap();
+        assert!(matches!(
+            source.parser().await,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData
+        ));
+    }
+
+    #[cfg(feature = "txt-fs")]
+    #[tokio::test]
+    async fn rejects_missing_files() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_owned();
+        file.close().unwrap();
+        assert!(matches!(
+            Txt::from_path(&path, Title("title".to_owned()), metadata()).await,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        #[cfg(feature = "decode")]
+        assert!(matches!(
+            TxtWithCharset::from_path(&path, Title("title".to_owned()), metadata(), Charset::Dynamic).await,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+
+    #[cfg(all(feature = "txt-fs", feature = "decode"))]
+    #[tokio::test]
+    async fn decodes_files() {
+        use std::io::Write;
+
+        for text in ["春はあけぼの。", ""] {
+            let (bytes, _, had_errors) = encoding_rs::SHIFT_JIS.encode(text);
+            assert!(!had_errors);
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            file.write_all(&bytes).unwrap();
+            let source = TxtWithCharset::from_path(
+                file.path(),
+                Title("title".to_owned()),
+                metadata(),
+                Charset::ShiftJis,
+            )
+            .await
+            .unwrap();
+            assert_eq!(collect(source).await, expected(text));
+        }
+    }
+
+    #[cfg(all(feature = "txt-fs", feature = "decode"))]
+    #[tokio::test]
+    async fn rejects_unknown_file_encoding() {
+        use std::io::Write;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"\xff").unwrap();
+        let source = TxtWithCharset::from_path(
+            file.path(),
+            Title("title".to_owned()),
+            metadata(),
+            Charset::Dynamic,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            source.parser().await,
+            Err(ErrorWithCharset::UnknownEncoding(_))
+        ));
+    }
+}

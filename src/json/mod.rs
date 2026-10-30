@@ -235,3 +235,60 @@ impl JsonParser {
         de::parse_json(s).map(|it| Self { it })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{Body, IntoParser, Metadata, ParsedDoc, Parser, Title};
+    use std::fmt::Debug;
+
+    pub(super) const INPUT: &str = r#"[
+        {"title":"春","body":"春はあけぼの。"},
+        {"id":"doc-2","title":"夏","body":"夏は夜。","author":"清少納言"},
+        {"id":"doc-3","body":"秋は夕暮れ。"},
+        {"title":"","body":""}
+    ]"#;
+
+    pub(super) fn expected() -> Vec<ParsedDoc> {
+        vec![
+            ParsedDoc {
+                title: Title("春".to_owned()),
+                body: Body("春はあけぼの。".to_owned()),
+                metadata: None,
+            },
+            ParsedDoc {
+                title: Title("doc-2".to_owned()),
+                body: Body("夏は夜。".to_owned()),
+                metadata: Some(Metadata(
+                    [
+                        ("author".to_owned(), "清少納言".to_owned()),
+                        ("title".to_owned(), "夏".to_owned()),
+                    ]
+                    .into(),
+                )),
+            },
+            ParsedDoc {
+                title: Title("doc-3".to_owned()),
+                body: Body("秋は夕暮れ。".to_owned()),
+                metadata: None,
+            },
+            ParsedDoc {
+                title: Title(String::new()),
+                body: Body(String::new()),
+                metadata: None,
+            },
+        ]
+    }
+
+    pub(super) async fn collect<I: IntoParser>(input: I) -> Result<Vec<ParsedDoc>, I::Error>
+    where
+        <I::Parser as Parser>::Error: Debug,
+    {
+        let mut parser = input.parser().await?;
+        let mut docs = Vec::new();
+        while let Some(result) = parser.next().await {
+            docs.push(result.unwrap());
+        }
+        assert!(parser.next().await.is_none());
+        Ok(docs)
+    }
+}

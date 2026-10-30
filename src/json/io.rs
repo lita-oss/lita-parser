@@ -70,3 +70,77 @@ impl StdError for Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, Json};
+    use crate::json::tests::{INPUT, collect, expected};
+    use std::io::ErrorKind;
+
+    #[tokio::test]
+    async fn parses_async_reader() {
+        let input = Json::from(INPUT.as_bytes());
+        assert_eq!(collect(input).await.unwrap(), expected());
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_json() {
+        for json in ["", "[", r#"[{"title":"春"}]"#, "[] []"] {
+            let input = Json::from(json.as_bytes());
+            assert!(matches!(collect(input).await, Err(Error::Json(_))));
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_utf8() {
+        let input = Json::from(&b"[\xff]"[..]);
+        assert!(matches!(
+            collect(input).await,
+            Err(Error::Io(error)) if error.kind() == ErrorKind::InvalidData
+        ));
+    }
+
+    #[cfg(feature = "json-fs")]
+    #[tokio::test]
+    async fn parses_file() {
+        use std::io::Write;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(INPUT.as_bytes()).unwrap();
+        let input = Json::from_path(file.path()).await.unwrap();
+        assert_eq!(collect(input).await.unwrap(), expected());
+    }
+
+    #[cfg(feature = "json-fs")]
+    #[tokio::test]
+    async fn rejects_invalid_file_contents() {
+        use std::io::Write;
+
+        for json in ["", "[", r#"[{"title":"春"}]"#, "[] []"] {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            file.write_all(json.as_bytes()).unwrap();
+            let input = Json::from_path(file.path()).await.unwrap();
+            assert!(matches!(collect(input).await, Err(Error::Json(_))));
+        }
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"[\xff]").unwrap();
+        let input = Json::from_path(file.path()).await.unwrap();
+        assert!(matches!(
+            collect(input).await,
+            Err(Error::Io(error)) if error.kind() == ErrorKind::InvalidData
+        ));
+    }
+
+    #[cfg(feature = "json-fs")]
+    #[tokio::test]
+    async fn rejects_missing_file() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_owned();
+        file.close().unwrap();
+        assert!(matches!(
+            Json::from_path(&path).await,
+            Err(Error::Io(error)) if error.kind() == ErrorKind::NotFound
+        ));
+    }
+}

@@ -132,3 +132,143 @@ fn make_parser<R: Read>(rdr: R) -> CsvParser<R> {
     let rec = rdr.into_deserialize();
     CsvParser { rec }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::csv::tests::{INVALID, VALID, collect, doc, expected};
+
+    #[tokio::test]
+    async fn parses_borrowed_and_owned_strings() {
+        assert_eq!(collect(Csv::from(VALID)).await, (expected(), false));
+        assert_eq!(
+            collect(Csv::from(VALID.to_owned())).await,
+            (expected(), false)
+        );
+    }
+
+    #[tokio::test]
+    async fn stops_at_invalid_records_in_borrowed_and_owned_strings() {
+        let expected = vec![doc("春", "あけぼの。", &[])];
+        assert_eq!(collect(Csv::from(INVALID)).await, (expected.clone(), true));
+        assert_eq!(
+            collect(Csv::from(INVALID.to_owned())).await,
+            (expected, true)
+        );
+    }
+
+    #[cfg(feature = "decode")]
+    fn utf16_be(input: &'static str) -> Vec<u8> {
+        let mut units = vec![0; input.len()];
+        let written = encoding_rs::mem::convert_str_to_utf16(input, &mut units);
+        units[..written]
+            .iter()
+            .flat_map(|unit| unit.to_be_bytes())
+            .collect()
+    }
+
+    #[cfg(feature = "decode")]
+    #[tokio::test]
+    async fn decodes_utf16_be_bytes() {
+        let input = utf16_be(VALID);
+        assert_eq!(
+            collect(CsvWithCharset::from(input.as_slice(), Charset::Utf16Be)).await,
+            (expected(), false)
+        );
+        assert_eq!(
+            collect(CsvWithCharset::from(input.clone(), Charset::Utf16Be)).await,
+            (expected(), false)
+        );
+    }
+
+    #[cfg(feature = "decode")]
+    #[tokio::test]
+    async fn stops_at_invalid_utf16_be_csv_records() {
+        let input = utf16_be(INVALID);
+        let expected = vec![doc("春", "あけぼの。", &[])];
+        assert_eq!(
+            collect(CsvWithCharset::from(input.as_slice(), Charset::Utf16Be)).await,
+            (expected.clone(), true)
+        );
+        assert_eq!(
+            collect(CsvWithCharset::from(input.clone(), Charset::Utf16Be)).await,
+            (expected.clone(), true)
+        );
+    }
+
+    #[cfg(feature = "decode")]
+    #[tokio::test]
+    async fn replaces_malformed_utf16_be_sequences() {
+        let mut input = utf16_be("title,body\n春,あけぼの。");
+        input.extend_from_slice(&[0xd8, 0x00]);
+        assert_eq!(
+            collect(CsvWithCharset::from(input.as_slice(), Charset::Utf16Be)).await,
+            (vec![doc("春", "あけぼの。�", &[])], false)
+        );
+        assert_eq!(
+            collect(CsvWithCharset::from(input, Charset::Utf16Be)).await,
+            (vec![doc("春", "あけぼの。�", &[])], false)
+        );
+    }
+
+    #[cfg(feature = "decode")]
+    #[tokio::test]
+    async fn rejects_unknown_encodings() {
+        let input = [0xff];
+        assert!(
+            CsvWithCharset::from(input.as_slice(), Charset::Dynamic)
+                .parser()
+                .await
+                .is_err()
+        );
+        assert!(
+            CsvWithCharset::from(input.to_vec(), Charset::Dynamic)
+                .parser()
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn parses_title_id_and_metadata() {
+        for (input, expected) in [
+            (
+                "title,body\n春,あけぼの。\n",
+                vec![doc("春", "あけぼの。", &[])],
+            ),
+            ("id,body\n1,あけぼの。\n", vec![doc("1", "あけぼの。", &[])]),
+            (
+                "body,title,id,source\nあけぼの。,春,1,枕草子\n",
+                vec![doc(
+                    "1",
+                    "あけぼの。",
+                    &[("title", "春"), ("source", "枕草子")],
+                )],
+            ),
+            (
+                "title,body,source\n,,\n",
+                vec![doc("", "", &[("source", "")])],
+            ),
+            ("title,body\n", vec![]),
+            ("", vec![]),
+        ] {
+            let csv = Csv::from(input);
+            assert_eq!(collect(csv).await, (expected, false), "{input}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_and_duplicate_required_fields() {
+        for input in [
+            "body\nあけぼの。\n",
+            "title\n春\n",
+            "id\n1\n",
+            "title,title,body\n春,夏,あけぼの。\n",
+            "id,id,body\n1,2,あけぼの。\n",
+            "title,body,body\n春,あけぼの。,夜\n",
+        ] {
+            let csv = Csv::from(input);
+            assert_eq!(collect(csv).await, (vec![], true), "{input}");
+        }
+    }
+}
