@@ -9,10 +9,8 @@ mod acceptable_encodings {
 
 /// Represents the character encodings.
 ///
-/// When the feature flag `decode` is disabled, `Charset` only accepts `Charset::Utf8` and it is the
-/// [`Default`] value.
-///
-/// When the feature flag is enabled, we support more encodings but still `Charset::Utf8` is the default.
+/// When the feature flag `decode` is disabled, we only accepts UTF-8.
+/// When the feature flag is enabled, we support more encodings.
 ///
 /// When the `Charset` is set to `Dynamic`, the character encoding is determined in the following order:
 ///
