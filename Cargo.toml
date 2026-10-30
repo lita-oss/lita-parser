@@ -3,6 +3,12 @@ name = "lita-parser"
 version = "0.1.0"
 edition = "2024"
 
+authors = ["Masato Nakata <masaton@naughie.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lita-oss/lita-parser"
+homepage = "https://github.com/lita-oss/lita-parser"
+description = "Parser APIs that are used in LiTA."
+
 [features]
 default = ["txt-full", "json-full", "csv-full"]
 

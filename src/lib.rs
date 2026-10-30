@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 #[cfg(any(feature = "txt-bytes", feature = "txt-io"))]
 pub mod txt;
 
