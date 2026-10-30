@@ -56,8 +56,8 @@ pub struct TxtWithCharset<S> {
 }
 
 #[cfg(feature = "decode")]
-impl TxtWithCharset<Vec<u8>> {
-    pub fn from(txt: Vec<u8>, title: Title, metadata: Option<Metadata>, charset: Charset) -> Self {
+impl<S> TxtWithCharset<S> {
+    pub fn from(txt: S, title: Title, metadata: Option<Metadata>, charset: Charset) -> Self {
         Self {
             imp: imp::Txt {
                 bytes: txt,
@@ -80,45 +80,12 @@ impl IntoParser for TxtWithCharset<Vec<u8>> {
 }
 
 #[cfg(feature = "decode")]
-impl<'a> TxtWithCharset<&'a [u8]> {
-    pub fn from(txt: &'a [u8], title: Title, metadata: Option<Metadata>, charset: Charset) -> Self {
-        Self {
-            imp: imp::Txt {
-                bytes: txt,
-                title,
-                metadata,
-            },
-            charset,
-        }
-    }
-}
-
-#[cfg(feature = "decode")]
 impl IntoParser for TxtWithCharset<&[u8]> {
     type Error = UnknownEncoding;
     type Parser = TxtParser;
 
     async fn parser(self) -> Result<Self::Parser, Self::Error> {
         Ok(TxtParser::from(self.imp.decode(self.charset)?))
-    }
-}
-
-#[cfg(feature = "decode")]
-impl<'a> TxtWithCharset<Cow<'a, [u8]>> {
-    pub fn from(
-        txt: Cow<'a, [u8]>,
-        title: Title,
-        metadata: Option<Metadata>,
-        charset: Charset,
-    ) -> Self {
-        Self {
-            imp: imp::Txt {
-                bytes: txt,
-                title,
-                metadata,
-            },
-            charset,
-        }
     }
 }
 
