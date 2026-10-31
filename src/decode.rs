@@ -32,6 +32,7 @@ pub enum Charset {
 }
 
 impl Charset {
+    #[allow(unused)]
     fn get_encoding(self) -> &'static Encoding {
         use acceptable_encodings::*;
 
@@ -44,6 +45,7 @@ impl Charset {
         }
     }
 
+    #[allow(unused)]
     fn list_encodings() -> [(Self, &'static Encoding); 4] {
         use acceptable_encodings::*;
 
@@ -69,6 +71,7 @@ impl fmt::Display for UnknownEncoding {
 }
 impl std::error::Error for UnknownEncoding {}
 
+#[allow(unused)]
 fn decode_as(bytes: &[u8], charset: Charset, has_bom: bool) -> Cow<'_, str> {
     match charset {
         Charset::Utf8 => {
@@ -89,6 +92,7 @@ fn decode_as(bytes: &[u8], charset: Charset, has_bom: bool) -> Cow<'_, str> {
     }
 }
 
+#[allow(unused)]
 pub(crate) fn decode(bytes: &[u8], charset: Charset) -> Result<Cow<'_, str>, UnknownEncoding> {
     use unicode_bom::Bom;
     let bom = Bom::from(bytes);

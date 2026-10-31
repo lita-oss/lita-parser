@@ -2,6 +2,7 @@
 
 #[cfg(feature = "decode")]
 mod decode;
+#[cfg(feature = "decode")]
 pub use decode::{Charset, UnknownEncoding};
 
 #[cfg(any(feature = "txt-bytes", feature = "txt-io"))]

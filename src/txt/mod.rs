@@ -68,7 +68,7 @@ mod imp {
         }
     }
 
-    #[cfg(feature = "decode")]
+    #[cfg(all(feature = "decode", feature = "txt-bytes"))]
     impl<'a> Txt<&'a [u8]> {
         pub(super) fn decode(self, charset: Charset) -> Result<Txt<Cow<'a, str>>, UnknownEncoding> {
             decode(self.bytes, charset).map(|decoded| Txt {
@@ -79,7 +79,7 @@ mod imp {
         }
     }
 
-    #[cfg(feature = "decode")]
+    #[cfg(all(feature = "decode", feature = "txt-bytes"))]
     impl Txt<Cow<'_, [u8]>> {
         pub(super) fn decode(self, charset: Charset) -> Result<Txt<String>, UnknownEncoding> {
             decode(&self.bytes, charset).map(|decoded| Txt {
@@ -109,6 +109,7 @@ impl Parser for TxtParser {
 }
 
 impl TxtParser {
+    #[cfg(feature = "txt-bytes")]
     fn from<S: imp::IntoString>(txt: imp::Txt<S>) -> Self {
         Self {
             imp: Some(imp::Txt {
