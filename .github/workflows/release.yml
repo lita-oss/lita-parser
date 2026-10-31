@@ -63,7 +63,7 @@ jobs:
             fi
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git commit -m "Release $RELEASE_TAG"
+            git commit -m "Version $RELEASE_TAG"
             # Never overwrite branch changes. The tag lease also rejects concurrent tag changes.
             git push --atomic \
               --force-with-lease="refs/tags/$RELEASE_TAG:$original_tag" \
