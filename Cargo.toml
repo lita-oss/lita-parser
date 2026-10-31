@@ -9,7 +9,7 @@ repository = "https://github.com/lita-oss/lita-parser"
 homepage = "https://github.com/lita-oss/lita-parser"
 
 [workspace.dependencies]
-lita-parser = { path = "./crates/lita-parser", version = "0.1.6" }
+lita-parser = { path = "./crates/lita-parser", version = "0.1.7" }
 
 tokio = { version = "1" }
 serde = { version = "1.0" }
