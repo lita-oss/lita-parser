@@ -15,6 +15,10 @@ pub mod csv;
 
 use std::borrow::Borrow;
 use std::collections::btree_map::{self, BTreeMap};
+use std::iter::FusedIterator;
+
+#[cfg(feature = "stream")]
+use futures_util::stream::FusedStream;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Title(String);
@@ -39,10 +43,61 @@ pub trait IntoParser {
     fn parser(self) -> impl Future<Output = Result<Self::Parser, Self::Error>>;
 }
 
-pub trait Parser {
+impl<P: Parser> IntoParser for P {
+    type Error = std::convert::Infallible;
+    type Parser = Self;
+
+    async fn parser(self) -> Result<Self::Parser, Self::Error> {
+        Ok(self)
+    }
+}
+
+pub trait Parser: Sized {
     type Error;
 
+    fn size_hint(&self) -> Option<usize> {
+        None
+    }
+
     fn next(&mut self) -> impl Future<Output = Option<Result<ParsedDoc, Self::Error>>>;
+
+    fn batched(self, batch_size: usize) -> Batched<Self> {
+        let batch_size = if batch_size == 0 { 1 } else { batch_size };
+        Batched {
+            parser: self,
+            batch_size,
+        }
+    }
+}
+
+pub trait BatchParser: Sized {
+    type Error;
+
+    fn size_hint(&self) -> Option<usize> {
+        None
+    }
+
+    fn batch_size(&self) -> usize;
+
+    fn next(&mut self) -> impl Future<Output = Option<Result<Box<[ParsedDoc]>, Self::Error>>>;
+}
+
+impl<P: Parser> BatchParser for P {
+    type Error = P::Error;
+
+    fn size_hint(&self) -> Option<usize> {
+        <P as Parser>::size_hint(self)
+    }
+
+    fn batch_size(&self) -> usize {
+        1
+    }
+
+    async fn next(&mut self) -> Option<Result<Box<[ParsedDoc]>, Self::Error>> {
+        <P as Parser>::next(self)
+            .await
+            .map(|res| res.map(|doc| Box::from([doc])))
+    }
 }
 
 impl Title {
@@ -109,5 +164,121 @@ impl IntoIterator for Metadata {
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
+    }
+}
+
+pub struct Batched<P> {
+    parser: P,
+    batch_size: usize,
+}
+
+impl<P> Batched<P> {
+    pub fn flatten(self) -> P {
+        self.parser
+    }
+}
+
+impl<P: Parser> Batched<P> {
+    fn size_impl(&self) -> Option<usize> {
+        self.parser.size_hint().map(|size| {
+            if size == 0 {
+                0
+            } else {
+                (size - 1) / self.batch_size + 1
+            }
+        })
+    }
+
+    async fn next_impl(&mut self) -> Option<Result<Box<[ParsedDoc]>, P::Error>> {
+        let first = match self.parser.next().await? {
+            Ok(doc) => doc,
+            Err(e) => return Some(Err(e)),
+        };
+
+        let size = self.parser.size_hint().unwrap_or(usize::MAX - 1) + 1;
+        let mut batch = Vec::with_capacity(std::cmp::min(size, self.batch_size));
+
+        batch.push(first);
+
+        for _ in 1..self.batch_size {
+            match self.parser.next().await {
+                Some(Ok(doc)) => batch.push(doc),
+                Some(Err(e)) => return Some(Err(e)),
+                None => return Some(Ok(batch.into_boxed_slice())),
+            }
+        }
+
+        Some(Ok(batch.into_boxed_slice()))
+    }
+}
+
+impl<P: Parser> IntoParser for Batched<P> {
+    type Error = std::convert::Infallible;
+    type Parser = P;
+
+    async fn parser(self) -> Result<Self::Parser, Self::Error> {
+        Ok(self.parser)
+    }
+}
+
+impl<P: Parser> BatchParser for Batched<P> {
+    type Error = P::Error;
+
+    fn size_hint(&self) -> Option<usize> {
+        self.size_impl()
+    }
+
+    fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    async fn next(&mut self) -> Option<Result<Box<[ParsedDoc]>, Self::Error>> {
+        self.next_impl().await
+    }
+}
+
+pub struct DocIterator<I>(I);
+
+impl<E, I: FusedIterator<Item = Result<ParsedDoc, E>>> DocIterator<I> {
+    pub fn new(it: I) -> Self {
+        Self(it)
+    }
+}
+
+impl<E, I: FusedIterator<Item = Result<ParsedDoc, E>>> Parser for DocIterator<I> {
+    type Error = E;
+
+    fn size_hint(&self) -> Option<usize> {
+        let (_, upper) = self.0.size_hint();
+        upper
+    }
+
+    async fn next(&mut self) -> Option<Result<ParsedDoc, Self::Error>> {
+        self.0.next()
+    }
+}
+
+#[cfg(feature = "stream")]
+pub struct DocStream<S>(S);
+
+#[cfg(feature = "stream")]
+impl<E, S: FusedStream<Item = Result<ParsedDoc, E>>> DocStream<S> {
+    pub fn new(stream: S) -> Self {
+        Self(stream)
+    }
+}
+
+#[cfg(feature = "stream")]
+impl<E, S: FusedStream<Item = Result<ParsedDoc, E>> + Unpin> Parser for DocStream<S> {
+    type Error = E;
+
+    fn size_hint(&self) -> Option<usize> {
+        let (_, upper) = self.0.size_hint();
+        upper
+    }
+
+    async fn next(&mut self) -> Option<Result<ParsedDoc, Self::Error>> {
+        use futures_util::StreamExt as _;
+        self.0.next().await
     }
 }

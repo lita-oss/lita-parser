@@ -35,6 +35,13 @@ mod de {
             let it = self.inner.as_mut()?;
             it.next()
         }
+
+        pub(super) fn len(&self) -> usize {
+            self.inner
+                .as_ref()
+                .map(ExactSizeIterator::len)
+                .unwrap_or_default()
+        }
     }
 
     struct DocJson {
@@ -225,6 +232,10 @@ pub struct JsonParser {
 impl Parser for JsonParser {
     type Error = Infallible;
 
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.it.len())
+    }
+
     async fn next(&mut self) -> Option<Result<ParsedDoc, Self::Error>> {
         self.it.next().map(Ok)
     }
@@ -288,6 +299,8 @@ mod tests {
         while let Some(result) = parser.next().await {
             docs.push(result.unwrap());
         }
+        assert!(parser.next().await.is_none());
+        assert!(parser.next().await.is_none());
         assert!(parser.next().await.is_none());
         Ok(docs)
     }

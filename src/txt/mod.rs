@@ -98,6 +98,11 @@ pub struct TxtParser {
 impl Parser for TxtParser {
     type Error = Infallible;
 
+    fn size_hint(&self) -> Option<usize> {
+        let len = if self.imp.is_some() { 1 } else { 0 };
+        Some(len)
+    }
+
     async fn next(&mut self) -> Option<Result<ParsedDoc, Self::Error>> {
         imp::next_doc(&mut self.imp)
     }
@@ -131,6 +136,8 @@ mod tests {
         while let Some(doc) = parser.next().await {
             docs.push(doc.unwrap());
         }
+        assert!(parser.next().await.is_none());
+        assert!(parser.next().await.is_none());
         assert!(parser.next().await.is_none());
         docs
     }

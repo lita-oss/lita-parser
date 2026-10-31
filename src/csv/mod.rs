@@ -211,6 +211,8 @@ mod tests {
             }
         }
         assert!(parser.next().await.is_none());
+        assert!(parser.next().await.is_none());
+        assert!(parser.next().await.is_none());
         (docs, false)
     }
 }
