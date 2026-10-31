@@ -1,0 +1,332 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Serialize releases because they update the default branch and publish dependencies.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_DIST_VERSION: 0.32.0
+  RELEASE_TAG: ${{ github.ref_name }}
+
+jobs:
+  prepare:
+    name: Commit release versions
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.version.outputs.commit }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A rerun must check out the updated tag, not the original event SHA.
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Update versions and push the release commit
+        id: version
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH" \
+            "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git checkout --detach "refs/tags/$RELEASE_TAG"
+          original_tag=$(git rev-parse "refs/tags/$RELEASE_TAG")
+          tagged_commit=$(git rev-parse HEAD)
+          default_commit=$(git rev-parse "refs/remotes/origin/$DEFAULT_BRANCH")
+          if ! git merge-base --is-ancestor "$tagged_commit" "$default_commit"; then
+            echo 'Release tags must point to a commit on the default branch.' >&2
+            exit 1
+          fi
+
+          cargo x set-version "$RELEASE_TAG"
+          git add Cargo.toml Cargo.lock crates/lita-parser/Cargo.toml crates/lita-parser-cli/Cargo.toml
+          if ! git diff --cached --quiet; then
+            if [[ "$tagged_commit" != "$default_commit" ]]; then
+              echo 'Push a release tag at the tip of the default branch before preparing new versions.' >&2
+              exit 1
+            fi
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m "Release $RELEASE_TAG"
+            # Never overwrite branch changes. The tag lease also rejects concurrent tag changes.
+            git push --atomic \
+              --force-with-lease="refs/tags/$RELEASE_TAG:$original_tag" \
+              origin "HEAD:refs/heads/$DEFAULT_BRANCH" "HEAD:refs/tags/$RELEASE_TAG"
+          fi
+
+          version=${RELEASE_TAG#v}
+          prerelease=false
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test the workspace
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked --workspace --all-features
+
+  plan:
+    name: Plan release artifacts
+    needs: prepare
+    runs-on: ubuntu-22.04
+    outputs:
+      manifest: ${{ steps.plan.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            "https://github.com/axodotdev/cargo-dist/releases/download/v$CARGO_DIST_VERSION/cargo-dist-installer.sh" | sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/dist
+          if-no-files-found: error
+      - name: Plan target builds
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist plan --tag "$RELEASE_TAG" --output-format=json > plan-dist-manifest.json
+          echo "manifest=$(jq -c . plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-plan-dist-manifest
+          path: plan-dist-manifest.json
+          if-no-files-found: error
+
+  build-local-artifacts:
+    name: Build ${{ join(matrix.targets, ', ') }}
+    needs: [prepare, plan]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.manifest).ci.github.artifacts_matrix }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container && matrix.container.image || null }}
+    env:
+      BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-dist
+        shell: bash
+        run: ${{ matrix.install_dist.run }}
+      - name: Fetch the artifact plan
+        uses: actions/download-artifact@v8
+        with:
+          name: artifacts-plan-dist-manifest
+          path: target/distrib/
+      - name: Install build dependencies
+        if: matrix.packages_install
+        shell: bash
+        run: ${{ matrix.packages_install }}
+      - name: Build and package local artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist build --tag "$RELEASE_TAG" --print=linkage --output-format=json \
+            ${{ matrix.dist_args }} > dist-manifest.json
+      - name: Collect local artifacts
+        id: artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'paths<<EOF' >> "$GITHUB_OUTPUT"
+          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo 'EOF' >> "$GITHUB_OUTPUT"
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-build-local-${{ join(matrix.targets, '_') }}
+          path: |
+            ${{ steps.artifacts.outputs.paths }}
+            ${{ env.BUILD_MANIFEST_NAME }}
+          if-no-files-found: error
+
+  build-global-artifacts:
+    name: Build global artifacts
+    needs: [prepare, plan, build-local-artifacts]
+    runs-on: ubuntu-22.04
+    env:
+      BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cached cargo-dist
+        uses: actions/download-artifact@v8
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/
+      - run: chmod +x ~/.cargo/bin/dist
+      - name: Fetch local artifacts and manifests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+      - name: Build source archive and checksums
+        id: artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist build --tag "$RELEASE_TAG" --artifacts=global --output-format=json > dist-manifest.json
+          echo 'paths<<EOF' >> "$GITHUB_OUTPUT"
+          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo 'EOF' >> "$GITHUB_OUTPUT"
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-build-global
+          path: |
+            ${{ steps.artifacts.outputs.paths }}
+            ${{ env.BUILD_MANIFEST_NAME }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish crates.io packages
+    needs: [prepare, test, build-global-artifacts]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify the release tag
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$RELEASE_COMMIT"
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish the library, then the CLI
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CARGO_REGISTRY_TOKEN" || { echo 'Trusted publishing did not provide a crates.io token.' >&2; exit 1; }
+          for crate in lita-parser lita-parser-cli; do
+            # A retry may follow a successful upload whose later job failed.
+            status=$(curl --silent --show-error --location --retry 5 --retry-all-errors \
+              --user-agent "$GITHUB_REPOSITORY release workflow" \
+              --output /dev/null --write-out '%{http_code}' \
+              "https://crates.io/api/v1/crates/$crate/$VERSION")
+            case "$status" in
+              200) echo "$crate $VERSION is already published; skipping." ;;
+              404) cargo publish --locked --all-features --registry crates-io --package "$crate" ;;
+              *) echo "Cannot check $crate $VERSION on crates.io (HTTP $status)." >&2; exit 1 ;;
+            esac
+          done
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, plan, build-global-artifacts, publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cached cargo-dist
+        uses: actions/download-artifact@v8
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/
+      - run: chmod +x ~/.cargo/bin/dist
+      - name: Fetch all release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+      - name: Verify the release tag
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$RELEASE_COMMIT"
+      - name: Merge release manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist manifest --tag "$RELEASE_TAG" --artifacts=all --output-format=json > dist-manifest.json
+      - name: Create the release and attach binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist print-upload-files-from-manifest --manifest dist-manifest.json > release-assets.txt
+          mapfile -t assets < release-assets.txt
+          test "${#assets[@]}" -gt 0
+          assets+=(dist-manifest.json)
+          for asset in "${assets[@]}"; do
+            test -f "$asset" || { echo "Missing release asset: $asset" >&2; exit 1; }
+          done
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
+            if jq --exit-status '.isDraft == false' release.json > /dev/null; then
+              echo "Release $RELEASE_TAG is already published."
+              exit 0
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes \
+              --title "$RELEASE_TAG" --prerelease="$PRERELEASE"
+          fi
+          # Upload to a draft so a failed upload never exposes an incomplete release.
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease="$PRERELEASE"
