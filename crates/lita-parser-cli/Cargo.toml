@@ -1,0 +1,23 @@
+[package]
+name = "lita-parser-cli"
+version = "0.1.6"
+edition = "2024"
+description = "Parser CLI that are used in LiTA."
+
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["txt", "json", "csv", "decode"]
+
+txt = ["lita-parser/txt-fs"]
+json = ["lita-parser/json-fs"]
+csv = ["lita-parser/csv-fs"]
+
+decode = ["lita-parser/decode"]
+
+[dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+lita-parser = { workspace = true, default-features = false, features = ["stream"] }
