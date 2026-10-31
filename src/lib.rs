@@ -37,6 +37,9 @@ pub struct ParsedDoc {
     pub metadata: Option<Metadata>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Batch(Box<[ParsedDoc]>);
+
 pub trait IntoParser {
     type Error;
     type Parser: Parser;
@@ -80,7 +83,7 @@ pub trait BatchParser: Sized {
 
     fn batch_size(&self) -> usize;
 
-    fn next(&mut self) -> impl Future<Output = Option<Result<Box<[ParsedDoc]>, Self::Error>>>;
+    fn next(&mut self) -> impl Future<Output = Option<Result<Batch, Self::Error>>>;
 }
 
 impl<P: Parser> BatchParser for P {
@@ -94,10 +97,10 @@ impl<P: Parser> BatchParser for P {
         1
     }
 
-    async fn next(&mut self) -> Option<Result<Box<[ParsedDoc]>, Self::Error>> {
+    async fn next(&mut self) -> Option<Result<Batch, Self::Error>> {
         <P as Parser>::next(self)
             .await
-            .map(|res| res.map(|doc| Box::from([doc])))
+            .map(|res| res.map(|doc| Batch::from([doc])))
     }
 }
 
@@ -168,6 +171,77 @@ impl IntoIterator for Metadata {
     }
 }
 
+impl Batch {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn as_slice(&self) -> &[ParsedDoc] {
+        &self.0
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [ParsedDoc] {
+        &mut self.0
+    }
+
+    pub fn into_slice(self) -> Box<[ParsedDoc]> {
+        self.0
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, ParsedDoc> {
+        self.0.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, ParsedDoc> {
+        self.0.iter_mut()
+    }
+
+    pub fn get(&self, idx: usize) -> Option<&ParsedDoc> {
+        self.0.get(idx)
+    }
+
+    pub fn get_mut(&mut self, idx: usize) -> Option<&mut ParsedDoc> {
+        self.0.get_mut(idx)
+    }
+}
+
+impl IntoIterator for Batch {
+    type Item = ParsedDoc;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl From<Vec<ParsedDoc>> for Batch {
+    fn from(value: Vec<ParsedDoc>) -> Self {
+        Self(value.into_boxed_slice())
+    }
+}
+
+impl From<Box<[ParsedDoc]>> for Batch {
+    fn from(value: Box<[ParsedDoc]>) -> Self {
+        Self(value)
+    }
+}
+
+impl<const N: usize> From<[ParsedDoc; N]> for Batch {
+    fn from(value: [ParsedDoc; N]) -> Self {
+        Self(Box::from(value))
+    }
+}
+
+impl From<&[ParsedDoc]> for Batch {
+    fn from(value: &[ParsedDoc]) -> Self {
+        Self(Box::from(value))
+    }
+}
+
 pub struct Batched<P> {
     parser: P,
     batch_size: usize,
@@ -190,7 +264,7 @@ impl<P: Parser> Batched<P> {
         })
     }
 
-    async fn next_impl(&mut self) -> Option<Result<Box<[ParsedDoc]>, P::Error>> {
+    async fn next_impl(&mut self) -> Option<Result<Batch, P::Error>> {
         let first = match self.parser.next().await? {
             Ok(doc) => doc,
             Err(e) => return Some(Err(e)),
@@ -205,11 +279,11 @@ impl<P: Parser> Batched<P> {
             match self.parser.next().await {
                 Some(Ok(doc)) => batch.push(doc),
                 Some(Err(e)) => return Some(Err(e)),
-                None => return Some(Ok(batch.into_boxed_slice())),
+                None => return Some(Ok(Batch::from(batch))),
             }
         }
 
-        Some(Ok(batch.into_boxed_slice()))
+        Some(Ok(Batch::from(batch)))
     }
 }
 
@@ -233,7 +307,7 @@ impl<P: Parser> BatchParser for Batched<P> {
         self.batch_size
     }
 
-    async fn next(&mut self) -> Option<Result<Box<[ParsedDoc]>, Self::Error>> {
+    async fn next(&mut self) -> Option<Result<Batch, Self::Error>> {
         self.next_impl().await
     }
 }
