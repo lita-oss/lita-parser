@@ -10,14 +10,21 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
-default = ["txt", "json", "csv", "decode"]
+default = ["json", "csv", "decode"]
 
-txt = ["lita-parser/txt-fs"]
 json = ["lita-parser/json-fs"]
 csv = ["lita-parser/csv-fs"]
 
 decode = ["lita-parser/decode"]
 
 [dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-lita-parser = { workspace = true, default-features = false, features = ["stream"] }
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "signal"] }
+lita-parser = { workspace = true, default-features = false, features = ["stream", "txt-fs"] }
+
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+futures-util = "0.3"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

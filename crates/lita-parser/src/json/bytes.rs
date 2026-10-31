@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use serde_json::Error;
 
 pub struct Json<S> {
-    bytes: S,
+    pub(crate) bytes: S,
 }
 
 impl<S> Json<S> {

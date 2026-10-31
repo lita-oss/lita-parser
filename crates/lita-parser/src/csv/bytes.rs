@@ -24,7 +24,7 @@ impl<R: Read> Parser for CsvParser<R> {
 }
 
 pub struct Csv<S> {
-    bytes: S,
+    pub(crate) bytes: S,
 }
 
 impl<S> Csv<S> {
@@ -66,8 +66,8 @@ impl<'a> IntoParser for Csv<Cow<'a, str>> {
 
 #[cfg(feature = "decode")]
 pub struct CsvWithCharset<S> {
-    bytes: S,
-    charset: Charset,
+    pub(crate) bytes: S,
+    pub(crate) charset: Charset,
 }
 
 #[cfg(feature = "decode")]
