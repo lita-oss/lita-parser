@@ -1,5 +1,5 @@
 pub mod decode;
-#[cfg(feature = "_tokio-io")]
+#[cfg(feature = "tokio-io")]
 pub use decode::EncodingTokioExt;
 pub use decode::{Encoding, OneshotDecoder, StreamEncoding, UnknownEncoding, Utf8};
 

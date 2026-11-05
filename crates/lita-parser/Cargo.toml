@@ -17,18 +17,18 @@ tokio-io-full = ["txt-tokio-io", "json-tokio-io", "csv-tokio-io"]
 
 txt-full = ["txt-sync", "txt-tokio-io"]
 txt-sync = []
-txt-tokio-io = ["_tokio-io"]
+txt-tokio-io = ["tokio-io"]
 
 json-full = ["json-sync", "json-tokio-io"]
 json-sync = ["dep:serde", "dep:serde_json"]
-json-tokio-io = ["dep:serde", "dep:serde_json", "_tokio-io"]
+json-tokio-io = ["dep:serde", "dep:serde_json", "tokio-io"]
 
 csv-full = ["csv-sync", "csv-tokio-io"]
 csv-sync = ["dep:serde", "dep:csv"]
-csv-tokio-io = ["dep:serde", "dep:csv-async", "_tokio-io"]
+csv-tokio-io = ["dep:serde", "dep:csv-async", "tokio-io"]
 
 fs = ["tokio?/fs"]
-_tokio-io = ["tokio/io-util"]
+tokio-io = ["tokio/io-util"]
 
 decode = ["dep:encoding_rs"]
 

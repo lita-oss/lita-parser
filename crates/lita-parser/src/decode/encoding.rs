@@ -20,7 +20,7 @@ pub trait StreamEncoding: Encoding {
     fn stream_decoder_maker(self) -> Self::MakeStreamDecoder;
 }
 
-#[cfg(feature = "_tokio-io")]
+#[cfg(feature = "tokio-io")]
 pub use tokio::EncodingTokioExt;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -187,7 +187,7 @@ mod other {
     }
 }
 
-#[cfg(feature = "_tokio-io")]
+#[cfg(feature = "tokio-io")]
 mod tokio {
     use super::super::stream::{StreamDecoder, StreamDecoderUtf8};
     use super::StreamEncoding;

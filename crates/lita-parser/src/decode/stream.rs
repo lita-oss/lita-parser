@@ -5,7 +5,7 @@ use encoding_rs::{
 
 use unicode_bom::Bom;
 
-#[cfg(any(feature = "decode", feature = "_tokio-io"))]
+#[cfg(any(feature = "decode", feature = "tokio-io"))]
 use std::io::Error as IoError;
 use std::io::Result as IoResult;
 
@@ -199,7 +199,7 @@ impl<const N: usize> MakeStreamDecoder for [&'static RsEncoding; N] {
     }
 }
 
-#[cfg(any(feature = "decode", feature = "_tokio-io"))]
+#[cfg(any(feature = "decode", feature = "tokio-io"))]
 fn invalid_data() -> IoError {
     use std::io::ErrorKind;
 
@@ -256,10 +256,10 @@ fn valid(bytes: &[u8], enc: &'static RsEncoding, last: bool) -> bool {
     }
 }
 
-#[cfg(feature = "_tokio-io")]
+#[cfg(feature = "tokio-io")]
 pub use tokio::{StreamDecoder, StreamDecoderUtf8};
 
-#[cfg(feature = "_tokio-io")]
+#[cfg(feature = "tokio-io")]
 mod tokio {
     use super::super::OneshotDecoder;
     use super::{DecodeResult, Decoder as _, MakeStreamDecoder, invalid_data};
