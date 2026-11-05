@@ -1,23 +1,30 @@
-#[cfg(feature = "json-bytes")]
-pub mod bytes;
+#[cfg(feature = "json-sync")]
+pub mod sync_bytes;
 
-#[cfg(feature = "json-io")]
-pub mod io;
+#[cfg(feature = "json-tokio-io")]
+pub mod tokio_io;
 
 use crate::{ParsedDoc, Parser};
+
+use de::{DocsIter, parse_json};
+
+use serde_json::Error;
+
 use std::convert::Infallible;
 
 mod de {
     use crate::ParsedDoc;
 
+    use serde_json::{Deserializer, Error};
+
     use serde::de::{self, Deserialize};
-    use serde_json::Error;
-    use std::collections::BTreeMap;
+
+    use std::{collections::BTreeMap, vec::IntoIter};
 
     pub(super) fn parse_json(json: &str) -> Result<DocsIter, Error> {
         use de::DeserializeSeed as _;
 
-        let mut deserializer = serde_json::Deserializer::from_str(json);
+        let mut deserializer = Deserializer::from_str(json);
         let docs = VecDocJsonSeed.deserialize(&mut deserializer)?;
         deserializer.end()?;
 
@@ -27,20 +34,16 @@ mod de {
     }
 
     pub(super) struct DocsIter {
-        inner: Option<std::vec::IntoIter<ParsedDoc>>,
+        inner: Option<IntoIter<ParsedDoc>>,
     }
 
     impl DocsIter {
         pub(super) fn next(&mut self) -> Option<ParsedDoc> {
-            let it = self.inner.as_mut()?;
-            it.next()
+            self.inner.as_mut()?.next()
         }
 
         pub(super) fn len(&self) -> usize {
-            self.inner
-                .as_ref()
-                .map(ExactSizeIterator::len)
-                .unwrap_or_default()
+            self.inner.as_ref().map_or(0, ExactSizeIterator::len)
         }
     }
 
@@ -60,7 +63,9 @@ mod de {
             D: de::Deserializer<'de>,
         {
             use crate::{Body, Metadata, Title};
+
             use de::{SeqAccess, Visitor};
+
             use std::fmt;
 
             struct VecDocVisitor;
@@ -102,6 +107,7 @@ mod de {
             D: de::Deserializer<'de>,
         {
             use de::{MapAccess, Visitor};
+
             use std::fmt;
 
             enum Field {
@@ -148,7 +154,7 @@ mod de {
             impl<'de> Deserialize<'de> for Field {
                 fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
                 where
-                    D: serde::Deserializer<'de>,
+                    D: de::Deserializer<'de>,
                 {
                     deserializer.deserialize_identifier(FieldVisitor)
                 }
@@ -173,30 +179,20 @@ mod de {
                     let mut metadata: Option<BTreeMap<String, String>> = None;
 
                     while let Some(field) = map.next_key::<Field>()? {
-                        match field {
-                            Field::Title => {
-                                if title.is_some() {
-                                    return Err(de::Error::duplicate_field("title"));
-                                }
-                                title = Some(map.next_value()?);
-                            }
-                            Field::Id => {
-                                if id.is_some() {
-                                    return Err(de::Error::duplicate_field("id"));
-                                }
-                                id = Some(map.next_value()?);
-                            }
-                            Field::Body => {
-                                if body.is_some() {
-                                    return Err(de::Error::duplicate_field("body"));
-                                }
-                                body = Some(map.next_value()?);
-                            }
+                        let (value, field) = match field {
+                            Field::Title => (&mut title, "title"),
+                            Field::Id => (&mut id, "id"),
+                            Field::Body => (&mut body, "body"),
                             Field::Metadata(key) => {
                                 let value = map.next_value()?;
                                 metadata.get_or_insert_default().insert(key, value);
+                                continue;
                             }
+                        };
+                        if value.is_some() {
+                            return Err(de::Error::duplicate_field(field));
                         }
+                        *value = Some(map.next_value()?);
                     }
 
                     let (title, metadata_title) = match (id, title) {
@@ -226,7 +222,7 @@ mod de {
 }
 
 pub struct JsonParser {
-    it: de::DocsIter,
+    it: DocsIter,
 }
 
 impl Parser for JsonParser {
@@ -242,8 +238,8 @@ impl Parser for JsonParser {
 }
 
 impl JsonParser {
-    fn from_str(s: &str) -> Result<Self, serde_json::Error> {
-        de::parse_json(s).map(|it| Self { it })
+    fn from_str(s: &str) -> Result<Self, Error> {
+        parse_json(s).map(|it| Self { it })
     }
 }
 

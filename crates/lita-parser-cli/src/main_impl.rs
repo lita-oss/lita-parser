@@ -1,39 +1,46 @@
+use lita_parser::decode::Encoding as EncodingTrait;
+use lita_parser::dispatch::tokio_io::Dispatch;
+use lita_parser::{IntoParser, ParsedDoc, Parser};
+
 pub use anyhow::Error;
 use anyhow::{Context as _, bail};
-use clap::{Parser, ValueEnum};
-use futures_util::stream::{FuturesUnordered, StreamExt as _};
-#[cfg(not(feature = "decode"))]
-use lita_parser::dispatch::io::Dispatch;
-#[cfg(feature = "decode")]
-use lita_parser::dispatch::io::DispatchWithCharset;
-use lita_parser::{IntoParser as _, ParsedDoc, Parser as _};
-use serde::Serialize;
-use tracing_subscriber::EnvFilter;
 
-use std::collections::{BTreeMap, HashSet};
-use std::io::{BufWriter, Write};
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use clap::ValueEnum;
 
-use tokio::fs;
+use tokio::fs::{File, metadata};
 
-#[derive(Debug, Clone, Parser)]
+use std::{
+    collections::BTreeMap,
+    error::Error as StdError,
+    io::Write,
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+};
+
+#[derive(Debug, Clone, clap::Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Input file or directory to parse recursively
-    #[arg(short, long)]
+    #[arg(short, long, help = "Input file or directory to parse recursively")]
     input: PathBuf,
 
-    /// Output JSONL file
-    #[arg(short, long)]
+    #[arg(short, long, help = "Output JSONL file")]
     output: PathBuf,
 
-    /// Character encoding of the input files
-    #[arg(short, long, default_value = "utf-8", ignore_case = true)]
+    #[arg(
+        short,
+        long,
+        default_value = "utf-8",
+        ignore_case = true,
+        help = "Character encoding of the input files"
+    )]
     encoding: Encoding,
 
-    /// Maximum number of concurrent files when parsing a directory
-    #[arg(short, long, default_value = "1")]
+    #[arg(
+        short,
+        long,
+        default_value = "1",
+        help = "Maximum number of concurrent files when parsing a directory"
+    )]
     jobs: NonZeroUsize,
 }
 
@@ -57,21 +64,7 @@ enum Encoding {
     Dynamic,
 }
 
-#[cfg(feature = "decode")]
-impl From<Encoding> for lita_parser::Charset {
-    fn from(value: Encoding) -> Self {
-        match value {
-            Encoding::Utf8 => Self::Utf8,
-            Encoding::Utf16Be => Self::Utf16Be,
-            Encoding::Utf16Le => Self::Utf16Le,
-            Encoding::ShiftJis => Self::ShiftJis,
-            Encoding::EucJp => Self::EucJp,
-            Encoding::Dynamic => Self::Dynamic,
-        }
-    }
-}
-
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 struct ParsedDocRef<'a> {
     title: &'a str,
     body: &'a str,
@@ -89,33 +82,18 @@ impl<'a> From<&'a ParsedDoc> for ParsedDocRef<'a> {
     }
 }
 
-async fn parse_file(path: PathBuf, _encoding: Encoding) -> Result<Vec<ParsedDoc>, Error> {
-    tracing::debug!(path = %path.display(), "Parsing input file");
-
-    if let Some(ext) = path.extension().and_then(|extension| extension.to_str()) {
-        if ext.eq_ignore_ascii_case("json") && !cfg!(feature = "json") {
-            tracing::warn!(path = %path.display(), "JSON support is disabled; parsing as text");
-        }
-        if ext.eq_ignore_ascii_case("csv") && !cfg!(feature = "csv") {
-            tracing::warn!(path = %path.display(), "CSV support is disabled; parsing as text");
-        }
-    }
-
-    #[cfg(not(feature = "decode"))]
-    let parser = Dispatch::from_path(&path);
-    #[cfg(feature = "decode")]
-    let parser = DispatchWithCharset::from_path(&path, _encoding.into());
-
-    let parser = parser
-        .await
-        .with_context(|| format!("could not open input file {}", path.display()))?;
-
-    let mut parser = parser
+async fn parse<I>(src: I, path: &Path) -> Result<Vec<ParsedDoc>, Error>
+where
+    I: IntoParser,
+    I::Error: StdError + Send + Sync + 'static,
+    <I::Parser as Parser>::Error: StdError + Send + Sync + 'static,
+{
+    let mut parser = src
         .parser()
         .await
         .with_context(|| format!("could not initialize parser for {}", path.display()))?;
 
-    let mut docs = Vec::new();
+    let mut docs = Vec::with_capacity(parser.size_hint().unwrap_or_default());
     while let Some(doc) = parser.next().await {
         docs.push(doc.with_context(|| format!("could not parse {}", path.display()))?);
     }
@@ -123,20 +101,73 @@ async fn parse_file(path: PathBuf, _encoding: Encoding) -> Result<Vec<ParsedDoc>
     Ok(docs)
 }
 
+async fn parse_file(path: PathBuf, encoding: Encoding) -> Result<Vec<ParsedDoc>, Error> {
+    use lita_parser::decode::Utf8;
+    #[cfg(feature = "decode")]
+    use lita_parser::decode::{Dynamic, EucJp, ShiftJis, Utf16Be, Utf16Le};
+
+    use tracing::{debug, warn};
+
+    use std::ffi::OsStr;
+
+    debug!(path = %path.display(), "Parsing input file");
+
+    let ext = path.extension().and_then(OsStr::to_str);
+    if let Some(ext) = ext {
+        if ext.eq_ignore_ascii_case("json") && !cfg!(feature = "json") {
+            warn!(path = %path.display(), "JSON support is disabled; parsing as text");
+        }
+        if ext.eq_ignore_ascii_case("csv") && !cfg!(feature = "csv") {
+            warn!(path = %path.display(), "CSV support is disabled; parsing as text");
+        }
+    }
+
+    match encoding {
+        Encoding::Utf8 => parse_path(&path, Utf8).await,
+        #[cfg(feature = "decode")]
+        Encoding::Utf16Be => parse_path(&path, Utf16Be).await,
+        #[cfg(feature = "decode")]
+        Encoding::Utf16Le => parse_path(&path, Utf16Le).await,
+        #[cfg(feature = "decode")]
+        Encoding::ShiftJis => parse_path(&path, ShiftJis).await,
+        #[cfg(feature = "decode")]
+        Encoding::EucJp => parse_path(&path, EucJp).await,
+        #[cfg(feature = "decode")]
+        Encoding::Dynamic => parse_path(&path, Dynamic).await,
+    }
+}
+
+async fn parse_path<E: EncodingTrait>(path: &Path, encoding: E) -> Result<Vec<ParsedDoc>, Error>
+where
+    Dispatch<File, E>: IntoParser<
+            Error: StdError + Send + Sync + 'static,
+            Parser: Parser<Error: StdError + Send + Sync + 'static>,
+        >,
+{
+    let src = Dispatch::from_path(path, encoding)
+        .await
+        .with_context(|| format!("could not open input file {}", path.display()))?;
+    parse(src, path).await
+}
+
 async fn collect_files(path: PathBuf) -> Result<Vec<PathBuf>, Error> {
+    use tokio::fs::{canonicalize, read_dir};
+
+    use std::{collections::HashSet, io::ErrorKind};
+
     let mut dirs = vec![path];
     let mut visited = HashSet::new();
     let mut files = Vec::new();
 
     while let Some(dir) = dirs.pop() {
-        let canon = fs::canonicalize(&dir)
+        let canon = canonicalize(&dir)
             .await
             .with_context(|| format!("could not resolve directory {}", dir.display()))?;
         if !visited.insert(canon) {
             continue;
         }
 
-        let mut entries = fs::read_dir(&dir)
+        let mut entries = read_dir(&dir)
             .await
             .with_context(|| format!("could not read directory {}", dir.display()))?;
 
@@ -144,11 +175,11 @@ async fn collect_files(path: PathBuf) -> Result<Vec<PathBuf>, Error> {
             let path = entry.path();
             let file_type = entry.file_type().await?;
             let file_type = if file_type.is_symlink() {
-                match fs::metadata(&path).await {
+                match metadata(&path).await {
                     Ok(metadata) => metadata.file_type(),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(error) => {
-                        return Err(error).with_context(|| {
+                    Err(e) if e.kind() == ErrorKind::NotFound => continue,
+                    Err(e) => {
+                        return Err(e).with_context(|| {
                             format!("could not read metadata for {}", path.display())
                         });
                     }
@@ -169,19 +200,24 @@ async fn collect_files(path: PathBuf) -> Result<Vec<PathBuf>, Error> {
 }
 
 fn write_docs(output: &mut impl Write, docs: &[ParsedDoc]) -> Result<(), Error> {
+    use serde_json::to_writer;
+
     for doc in docs {
-        writeln!(
-            output,
-            "{}",
-            serde_json::to_string(&ParsedDocRef::from(doc))?
-        )?;
+        to_writer(&mut *output, &ParsedDocRef::from(doc))?;
+        output.write_all(b"\n")?;
     }
 
     Ok(())
 }
 
 async fn run(args: Args) -> Result<(), Error> {
-    let metadata = fs::metadata(&args.input)
+    use futures_util::{StreamExt as _, stream::FuturesUnordered};
+
+    use tokio::spawn;
+
+    use std::io::BufWriter;
+
+    let metadata = metadata(&args.input)
         .await
         .with_context(|| format!("could not read metadata for {}", args.input.display()))?;
 
@@ -193,25 +229,22 @@ async fn run(args: Args) -> Result<(), Error> {
         bail!("input must be a regular file or directory");
     };
 
-    let file = fs::File::create(&args.output)
+    let file = File::create(&args.output)
         .await
         .with_context(|| format!("could not create output file {}", args.output.display()))?;
     let mut output = BufWriter::new(file.into_std().await);
 
     if let Some(files) = files {
-        for paths in files.chunks(args.jobs.get()) {
-            let mut tasks = paths
-                .iter()
-                .map(|path| tokio::spawn(parse_file(path.clone(), args.encoding)))
+        let mut files = files.into_iter();
+        while files.len() > 0 {
+            let mut tasks = files
+                .by_ref()
+                .take(args.jobs.get())
+                .map(|path| spawn(parse_file(path, args.encoding)))
                 .collect::<FuturesUnordered<_>>();
 
-            let mut batch = Vec::new();
             while let Some(res) = tasks.next().await {
-                batch.push(res??);
-            }
-
-            for docs in batch {
-                write_docs(&mut output, &docs)?;
+                write_docs(&mut output, &res??)?;
             }
         }
     } else {
@@ -227,13 +260,19 @@ async fn run(args: Args) -> Result<(), Error> {
 }
 
 pub async fn main_impl() -> Result<(), Error> {
+    use clap::Parser as _;
+
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    use std::io::stdout;
+
     let args = Args::parse();
 
-    tracing_subscriber::fmt()
+    fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
-        .with_writer(std::io::stdout)
+        .with_writer(stdout)
         .init();
 
     run(args).await

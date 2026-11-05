@@ -1,35 +1,73 @@
-use super::DocCsv;
+use crate::decode::{Encoding, OneshotDecoder as _, UnknownEncoding, Utf8};
 use crate::{IntoParser, ParsedDoc, Parser};
+
+use super::de::DocCsv;
+
+use csv::{DeserializeRecordsIntoIter, Error as CsvError};
 
 use std::borrow::Cow;
 use std::convert::Infallible;
 use std::io::{Cursor, Read};
-
-use csv::DeserializeRecordsIntoIter;
-use csv::Error;
-
-#[cfg(feature = "decode")]
-use crate::decode::{Charset, UnknownEncoding, decode};
 
 pub struct CsvParser<R> {
     rec: DeserializeRecordsIntoIter<R, DocCsv>,
 }
 
 impl<R: Read> Parser for CsvParser<R> {
-    type Error = Error;
+    type Error = CsvError;
 
     async fn next(&mut self) -> Option<Result<ParsedDoc, Self::Error>> {
         self.rec.next().map(|res| res.map(DocCsv::into_parsed))
     }
 }
 
-pub struct Csv<S> {
-    pub(crate) bytes: S,
+pub struct Csv<S, E = Utf8> {
+    bytes: S,
+    encoding: E,
 }
 
-impl<S> Csv<S> {
-    pub fn from(csv: S) -> Self {
-        Self { bytes: csv }
+impl Csv<String> {
+    pub fn new(bytes: String) -> Self {
+        Self {
+            bytes,
+            encoding: Utf8,
+        }
+    }
+}
+
+impl<'a> Csv<&'a str> {
+    pub fn new(bytes: &'a str) -> Self {
+        Self {
+            bytes,
+            encoding: Utf8,
+        }
+    }
+}
+
+impl<'a> Csv<Cow<'a, str>> {
+    pub fn new(bytes: Cow<'a, str>) -> Self {
+        Self {
+            bytes,
+            encoding: Utf8,
+        }
+    }
+}
+
+impl<E: Encoding> Csv<Vec<u8>, E> {
+    pub fn new(bytes: Vec<u8>, encoding: E) -> Self {
+        Self { bytes, encoding }
+    }
+}
+
+impl<'a, E: Encoding> Csv<&'a [u8], E> {
+    pub fn new(bytes: &'a [u8], encoding: E) -> Self {
+        Self { bytes, encoding }
+    }
+}
+
+impl<'a, E: Encoding> Csv<Cow<'a, [u8]>, E> {
+    pub fn new(bytes: Cow<'a, [u8]>, encoding: E) -> Self {
+        Self { bytes, encoding }
     }
 }
 
@@ -56,93 +94,74 @@ impl<'a> IntoParser for Csv<Cow<'a, str>> {
     type Parser = CsvParser<Cursor<Cow<'a, [u8]>>>;
 
     async fn parser(self) -> Result<Self::Parser, Self::Error> {
-        let bytes = match self.bytes {
-            Cow::Borrowed(v) => Cow::Borrowed(v.as_bytes()),
-            Cow::Owned(v) => Cow::Owned(v.into_bytes()),
-        };
-        Ok(make_parser(Cursor::new(bytes)))
+        Ok(make_parser(Cursor::new(into_bytes(self.bytes))))
     }
 }
 
-#[cfg(feature = "decode")]
-pub struct CsvWithCharset<S> {
-    pub(crate) bytes: S,
-    pub(crate) charset: Charset,
-}
-
-#[cfg(feature = "decode")]
-impl<S> CsvWithCharset<S> {
-    pub fn from(csv: S, charset: Charset) -> Self {
-        Self {
-            bytes: csv,
-            charset,
-        }
-    }
-}
-
-#[cfg(feature = "decode")]
-impl IntoParser for CsvWithCharset<Vec<u8>> {
+impl<E: Encoding> IntoParser for Csv<Vec<u8>, E> {
     type Error = UnknownEncoding;
     type Parser = CsvParser<Cursor<Vec<u8>>>;
 
     async fn parser(self) -> Result<Self::Parser, Self::Error> {
-        let bytes = decode(&self.bytes, self.charset)?.into_owned().into_bytes();
+        use crate::decode::decode_owned;
+
+        let bytes = decode_owned(self.bytes, self.encoding.oneshot_decoder())?.into_bytes();
         Ok(make_parser(Cursor::new(bytes)))
     }
 }
 
-#[cfg(feature = "decode")]
-impl<'a> IntoParser for CsvWithCharset<&'a [u8]> {
+impl<'a, E: Encoding> IntoParser for Csv<&'a [u8], E> {
     type Error = UnknownEncoding;
     type Parser = CsvParser<Cursor<Cow<'a, [u8]>>>;
 
     async fn parser(self) -> Result<Self::Parser, Self::Error> {
-        let bytes = match decode(self.bytes, self.charset)? {
-            Cow::Borrowed(v) => Cow::Borrowed(v.as_bytes()),
-            Cow::Owned(v) => Cow::Owned(v.into_bytes()),
-        };
+        let bytes = into_bytes(self.encoding.oneshot_decoder().decode(self.bytes)?);
         Ok(make_parser(Cursor::new(bytes)))
     }
 }
 
-#[cfg(feature = "decode")]
-impl<'a> IntoParser for CsvWithCharset<Cow<'a, [u8]>> {
+impl<'a, E: Encoding> IntoParser for Csv<Cow<'a, [u8]>, E> {
     type Error = UnknownEncoding;
     type Parser = CsvParser<Cursor<Cow<'a, [u8]>>>;
 
     async fn parser(self) -> Result<Self::Parser, Self::Error> {
-        match self.bytes {
-            Cow::Borrowed(v) => {
-                let bytes = match decode(v, self.charset)? {
-                    Cow::Borrowed(v) => Cow::Borrowed(v.as_bytes()),
-                    Cow::Owned(v) => Cow::Owned(v.into_bytes()),
-                };
-                Ok(make_parser(Cursor::new(bytes)))
-            }
-            Cow::Owned(v) => {
-                let bytes = decode(&v, self.charset)?.into_owned().into_bytes();
-                Ok(make_parser(Cursor::new(Cow::Owned(bytes))))
-            }
-        }
+        use crate::decode::decode_cow;
+
+        let bytes = into_bytes(decode_cow(self.bytes, self.encoding.oneshot_decoder())?);
+        Ok(make_parser(Cursor::new(bytes)))
+    }
+}
+
+fn into_bytes(s: Cow<'_, str>) -> Cow<'_, [u8]> {
+    match s {
+        Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
+        Cow::Owned(s) => Cow::Owned(s.into_bytes()),
     }
 }
 
 fn make_parser<R: Read>(rdr: R) -> CsvParser<R> {
-    let rdr = csv::Reader::from_reader(rdr);
+    use csv::Reader;
+
+    let rdr = Reader::from_reader(rdr);
     let rec = rdr.into_deserialize();
     CsvParser { rec }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #[cfg(feature = "decode")]
+    use crate::IntoParser as _;
     use crate::csv::tests::{INVALID, VALID, collect, doc, expected};
+    #[cfg(feature = "decode")]
+    use crate::decode::{Dynamic, Utf16Be};
+
+    use super::Csv;
 
     #[tokio::test]
     async fn parses_borrowed_and_owned_strings() {
-        assert_eq!(collect(Csv::from(VALID)).await, (expected(), false));
+        assert_eq!(collect(Csv::<&str>::new(VALID)).await, (expected(), false));
         assert_eq!(
-            collect(Csv::from(VALID.to_owned())).await,
+            collect(Csv::<String>::new(VALID.to_owned())).await,
             (expected(), false)
         );
     }
@@ -150,17 +169,22 @@ mod tests {
     #[tokio::test]
     async fn stops_at_invalid_records_in_borrowed_and_owned_strings() {
         let expected = vec![doc("春", "あけぼの。", &[])];
-        assert_eq!(collect(Csv::from(INVALID)).await, (expected.clone(), true));
         assert_eq!(
-            collect(Csv::from(INVALID.to_owned())).await,
+            collect(Csv::<&str>::new(INVALID)).await,
+            (expected.clone(), true)
+        );
+        assert_eq!(
+            collect(Csv::<String>::new(INVALID.to_owned())).await,
             (expected, true)
         );
     }
 
     #[cfg(feature = "decode")]
     fn utf16_be(input: &'static str) -> Vec<u8> {
+        use encoding_rs::mem::convert_str_to_utf16;
+
         let mut units = vec![0; input.len()];
-        let written = encoding_rs::mem::convert_str_to_utf16(input, &mut units);
+        let written = convert_str_to_utf16(input, &mut units);
         units[..written]
             .iter()
             .flat_map(|unit| unit.to_be_bytes())
@@ -172,11 +196,11 @@ mod tests {
     async fn decodes_utf16_be_bytes() {
         let input = utf16_be(VALID);
         assert_eq!(
-            collect(CsvWithCharset::from(input.as_slice(), Charset::Utf16Be)).await,
+            collect(Csv::<&[u8], _>::new(input.as_slice(), Utf16Be)).await,
             (expected(), false)
         );
         assert_eq!(
-            collect(CsvWithCharset::from(input.clone(), Charset::Utf16Be)).await,
+            collect(Csv::<Vec<u8>, _>::new(input.clone(), Utf16Be)).await,
             (expected(), false)
         );
     }
@@ -187,11 +211,11 @@ mod tests {
         let input = utf16_be(INVALID);
         let expected = vec![doc("春", "あけぼの。", &[])];
         assert_eq!(
-            collect(CsvWithCharset::from(input.as_slice(), Charset::Utf16Be)).await,
+            collect(Csv::<&[u8], _>::new(input.as_slice(), Utf16Be)).await,
             (expected.clone(), true)
         );
         assert_eq!(
-            collect(CsvWithCharset::from(input.clone(), Charset::Utf16Be)).await,
+            collect(Csv::<Vec<u8>, _>::new(input.clone(), Utf16Be)).await,
             (expected.clone(), true)
         );
     }
@@ -202,11 +226,11 @@ mod tests {
         let mut input = utf16_be("title,body\n春,あけぼの。");
         input.extend_from_slice(&[0xd8, 0x00]);
         assert_eq!(
-            collect(CsvWithCharset::from(input.as_slice(), Charset::Utf16Be)).await,
+            collect(Csv::<&[u8], _>::new(input.as_slice(), Utf16Be)).await,
             (vec![doc("春", "あけぼの。�", &[])], false)
         );
         assert_eq!(
-            collect(CsvWithCharset::from(input, Charset::Utf16Be)).await,
+            collect(Csv::<Vec<u8>, _>::new(input, Utf16Be)).await,
             (vec![doc("春", "あけぼの。�", &[])], false)
         );
     }
@@ -216,13 +240,13 @@ mod tests {
     async fn rejects_unknown_encodings() {
         let input = [0xff];
         assert!(
-            CsvWithCharset::from(input.as_slice(), Charset::Dynamic)
+            Csv::<&[u8], _>::new(input.as_slice(), Dynamic)
                 .parser()
                 .await
                 .is_err()
         );
         assert!(
-            CsvWithCharset::from(input.to_vec(), Charset::Dynamic)
+            Csv::<Vec<u8>, _>::new(input.to_vec(), Dynamic)
                 .parser()
                 .await
                 .is_err()
@@ -252,7 +276,7 @@ mod tests {
             ("title,body\n", vec![]),
             ("", vec![]),
         ] {
-            let csv = Csv::from(input);
+            let csv = Csv::<&str>::new(input);
             assert_eq!(collect(csv).await, (expected, false), "{input}");
         }
     }
@@ -267,7 +291,7 @@ mod tests {
             "id,id,body\n1,2,あけぼの。\n",
             "title,body,body\n春,あけぼの。,夜\n",
         ] {
-            let csv = Csv::from(input);
+            let csv = Csv::<&str>::new(input);
             assert_eq!(collect(csv).await, (vec![], true), "{input}");
         }
     }

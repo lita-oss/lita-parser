@@ -1,27 +1,32 @@
-#![cfg_attr(docsrs, feature(doc_cfg))]
+pub mod decode;
+#[cfg(feature = "_tokio-io")]
+pub use decode::EncodingTokioExt;
+pub use decode::{Encoding, OneshotDecoder, StreamEncoding, UnknownEncoding, Utf8};
 
 #[cfg(feature = "decode")]
-mod decode;
-#[cfg(feature = "decode")]
-pub use decode::{Charset, UnknownEncoding};
+pub use decode::{Dynamic, EucJp, ShiftJis, Utf16Be, Utf16Le};
 
 pub mod dispatch;
 
-#[cfg(any(feature = "txt-bytes", feature = "txt-io"))]
+#[cfg(any(feature = "txt-sync", feature = "txt-tokio-io"))]
 pub mod txt;
 
-#[cfg(any(feature = "json-bytes", feature = "json-io"))]
+#[cfg(any(feature = "json-sync", feature = "json-tokio-io"))]
 pub mod json;
 
-#[cfg(any(feature = "csv-bytes", feature = "csv-io"))]
+#[cfg(any(feature = "csv-sync", feature = "csv-tokio-io"))]
 pub mod csv;
-
-use std::borrow::Borrow;
-use std::collections::btree_map::{self, BTreeMap};
-use std::iter::FusedIterator;
 
 #[cfg(feature = "stream")]
 use futures_util::stream::FusedStream;
+
+use std::borrow::Borrow;
+use std::collections::btree_map::{self, BTreeMap};
+use std::convert::Infallible;
+use std::iter::FusedIterator;
+use std::num::NonZeroUsize;
+use std::slice::{self, IterMut};
+use std::vec;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Title(String);
@@ -29,7 +34,7 @@ pub struct Title(String);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Body(String);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Metadata(BTreeMap<String, String>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +55,7 @@ pub trait IntoParser {
 }
 
 impl<P: Parser> IntoParser for P {
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
     type Parser = Self;
 
     async fn parser(self) -> Result<Self::Parser, Self::Error> {
@@ -67,8 +72,7 @@ pub trait Parser: Sized {
 
     fn next(&mut self) -> impl Future<Output = Option<Result<ParsedDoc, Self::Error>>>;
 
-    fn batched(self, batch_size: usize) -> Batched<Self> {
-        let batch_size = if batch_size == 0 { 1 } else { batch_size };
+    fn batched(self, batch_size: NonZeroUsize) -> Batched<Self> {
         Batched {
             parser: self,
             batch_size,
@@ -83,7 +87,7 @@ pub trait BatchParser: Sized {
         None
     }
 
-    fn batch_size(&self) -> usize;
+    fn batch_size(&self) -> NonZeroUsize;
 
     fn next(&mut self) -> impl Future<Output = Option<Result<Batch, Self::Error>>>;
 }
@@ -95,8 +99,8 @@ impl<P: Parser> BatchParser for P {
         <P as Parser>::size_hint(self)
     }
 
-    fn batch_size(&self) -> usize {
-        1
+    fn batch_size(&self) -> NonZeroUsize {
+        NonZeroUsize::MIN
     }
 
     async fn next(&mut self) -> Option<Result<Batch, Self::Error>> {
@@ -194,11 +198,11 @@ impl Batch {
         self.0
     }
 
-    pub fn iter(&self) -> std::slice::Iter<'_, ParsedDoc> {
+    pub fn iter(&self) -> slice::Iter<'_, ParsedDoc> {
         self.0.iter()
     }
 
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, ParsedDoc> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, ParsedDoc> {
         self.0.iter_mut()
     }
 
@@ -213,7 +217,7 @@ impl Batch {
 
 impl IntoIterator for Batch {
     type Item = ParsedDoc;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type IntoIter = vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -246,7 +250,7 @@ impl From<&[ParsedDoc]> for Batch {
 
 pub struct Batched<P> {
     parser: P,
-    batch_size: usize,
+    batch_size: NonZeroUsize,
 }
 
 impl<P> Batched<P> {
@@ -257,31 +261,30 @@ impl<P> Batched<P> {
 
 impl<P: Parser> Batched<P> {
     fn size_impl(&self) -> Option<usize> {
-        self.parser.size_hint().map(|size| {
-            if size == 0 {
-                0
-            } else {
-                (size - 1) / self.batch_size + 1
-            }
-        })
+        self.parser
+            .size_hint()
+            .map(|size| size.div_ceil(self.batch_size.get()))
     }
 
     async fn next_impl(&mut self) -> Option<Result<Batch, P::Error>> {
+        use std::cmp::min;
+
         let first = match self.parser.next().await? {
             Ok(doc) => doc,
             Err(e) => return Some(Err(e)),
         };
 
         let size = self.parser.size_hint().unwrap_or(usize::MAX - 1) + 1;
-        let mut batch = Vec::with_capacity(std::cmp::min(size, self.batch_size));
+        let batch_size = self.batch_size.get();
+        let mut batch = Vec::with_capacity(min(size, batch_size));
 
         batch.push(first);
 
-        for _ in 1..self.batch_size {
+        for _ in 1..batch_size {
             match self.parser.next().await {
                 Some(Ok(doc)) => batch.push(doc),
                 Some(Err(e)) => return Some(Err(e)),
-                None => return Some(Ok(Batch::from(batch))),
+                None => break,
             }
         }
 
@@ -290,7 +293,7 @@ impl<P: Parser> Batched<P> {
 }
 
 impl<P: Parser> IntoParser for Batched<P> {
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
     type Parser = P;
 
     async fn parser(self) -> Result<Self::Parser, Self::Error> {
@@ -305,7 +308,7 @@ impl<P: Parser> BatchParser for Batched<P> {
         self.size_impl()
     }
 
-    fn batch_size(&self) -> usize {
+    fn batch_size(&self) -> NonZeroUsize {
         self.batch_size
     }
 
@@ -357,5 +360,32 @@ impl<E, S: FusedStream<Item = Result<ParsedDoc, E>> + Unpin> Parser for DocStrea
     async fn next(&mut self) -> Option<Result<ParsedDoc, Self::Error>> {
         use futures_util::StreamExt as _;
         self.0.next().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_batch_size() {
+        struct TestParser;
+
+        impl Parser for TestParser {
+            type Error = ();
+
+            fn size_hint(&self) -> Option<usize> {
+                None
+            }
+
+            async fn next(&mut self) -> Option<Result<ParsedDoc, Self::Error>> {
+                None
+            }
+        }
+
+        assert_eq!(
+            <TestParser as BatchParser>::batch_size(&TestParser),
+            NonZeroUsize::new(1).unwrap()
+        );
     }
 }

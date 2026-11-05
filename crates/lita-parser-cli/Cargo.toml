@@ -12,14 +12,14 @@ homepage.workspace = true
 [features]
 default = ["json", "csv", "decode"]
 
-json = ["lita-parser/json-fs"]
-csv = ["lita-parser/csv-fs"]
+json = ["lita-parser/json-tokio-io"]
+csv = ["lita-parser/csv-tokio-io"]
 
 decode = ["lita-parser/decode"]
 
 [dependencies]
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "signal"] }
-lita-parser = { workspace = true, default-features = false, features = ["stream", "txt-fs"] }
+lita-parser = { workspace = true, default-features = false, features = ["stream", "txt-tokio-io", "fs"] }
 
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }

@@ -1,13 +1,14 @@
-#[cfg(feature = "csv-bytes")]
-pub mod bytes;
+#[cfg(feature = "csv-sync")]
+pub mod sync_bytes;
 
-#[cfg(feature = "csv-io")]
-pub mod io;
+#[cfg(feature = "csv-tokio-io")]
+pub mod tokio_io;
 
-use de::DocCsv;
 mod de {
     use crate::{Body, Metadata, ParsedDoc, Title};
+
     use serde::de::{self, Deserialize};
+
     use std::collections::BTreeMap;
 
     pub(super) struct DocCsv {
@@ -78,7 +79,9 @@ mod de {
                 where
                     E: de::Error,
                 {
-                    let value = std::str::from_utf8(value)
+                    use std::str::from_utf8;
+
+                    let value = from_utf8(value)
                         .map_err(|_| E::invalid_value(de::Unexpected::Bytes(value), &self))?;
                     self.visit_str(value)
                 }
@@ -112,30 +115,20 @@ mod de {
                     let mut metadata: Option<BTreeMap<String, String>> = None;
 
                     while let Some(field) = map.next_key::<Field>()? {
-                        match field {
-                            Field::Title => {
-                                if title.is_some() {
-                                    return Err(de::Error::duplicate_field("title"));
-                                }
-                                title = Some(map.next_value()?);
-                            }
-                            Field::Id => {
-                                if id.is_some() {
-                                    return Err(de::Error::duplicate_field("id"));
-                                }
-                                id = Some(map.next_value()?);
-                            }
-                            Field::Body => {
-                                if body.is_some() {
-                                    return Err(de::Error::duplicate_field("body"));
-                                }
-                                body = Some(map.next_value()?);
-                            }
+                        let (field, key) = match field {
+                            Field::Title => (&mut title, "title"),
+                            Field::Id => (&mut id, "id"),
+                            Field::Body => (&mut body, "body"),
                             Field::Metadata(key) => {
                                 let value = map.next_value()?;
                                 metadata.get_or_insert_default().insert(key, value);
+                                continue;
                             }
+                        };
+                        if field.is_some() {
+                            return Err(de::Error::duplicate_field(key));
                         }
+                        *field = Some(map.next_value()?);
                     }
 
                     let (title, metadata_title) = match (id, title) {
@@ -167,6 +160,8 @@ mod de {
 #[cfg(test)]
 mod tests {
     use crate::{Body, IntoParser, Metadata, ParsedDoc, Parser, Title};
+
+    use std::fmt::Debug;
 
     pub(super) const VALID: &str =
         "id,title,body,author\n1,春,\"あけぼの。\n山ぎは\",清少納言\n2,夏,\"夜,月\",作者\n";
@@ -200,7 +195,7 @@ mod tests {
 
     pub(super) async fn collect<S: IntoParser>(source: S) -> (Vec<ParsedDoc>, bool)
     where
-        S::Error: std::fmt::Debug,
+        S::Error: Debug,
     {
         let mut parser = source.parser().await.unwrap();
         let mut docs = Vec::new();
